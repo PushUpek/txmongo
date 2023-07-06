@@ -16,12 +16,14 @@
 from __future__ import absolute_import, division
 
 import signal
-from bson import SON
-from pymongo.errors import OperationFailure, AutoReconnect, ConfigurationError
 from time import time
-from twisted.trial import unittest
+
+from bson import SON
+from pymongo.errors import AutoReconnect, ConfigurationError, OperationFailure
 from twisted.internet import defer, reactor
-from txmongo.connection import MongoConnection, ConnectionPool, _Connection
+from twisted.trial import unittest
+
+from txmongo.connection import ConnectionPool, MongoConnection
 from txmongo.errors import TimeExceeded
 from txmongo.protocol import QUERY_SLAVE_OK, MongoProtocol
 
@@ -31,17 +33,17 @@ from .mongod import Mongod
 class TestReplicaSet(unittest.TestCase):
 
     ports = [37017, 37018, 37019]
-    rsname = "rs1"
+    rsname = 'rs1'
 
     rsconfig = {
-        "_id": rsname,
-        "members": [
-            {"_id": i, "host": "localhost:{0}".format(port)}
+        '_id': rsname,
+        'members': [
+            {'_id': i, 'host': 'localhost:{0}'.format(port)}
             for i, port in enumerate(ports)
-        ]
+        ],
     }
     # We assume first member to be master
-    rsconfig["members"][0]["priority"] = 2
+    rsconfig['members'][0]['priority'] = 2
 
     __init_timeout = 60
     __ping_interval = 0.5
@@ -53,21 +55,29 @@ class TestReplicaSet(unittest.TestCase):
 
     @defer.inlineCallbacks
     def __check_reachable(self, port):
-        uri = "mongodb://localhost:{0}/?readPreference=secondaryPreferred".format(port)
+        uri = 'mongodb://localhost:{0}/?readPreference=secondaryPreferred'.format(
+            port
+        )
         conn = ConnectionPool(uri)
-        yield conn.admin.command("ismaster", check=False)
+        yield conn.admin.command('ismaster', check=False)
         yield conn.disconnect()
 
     @defer.inlineCallbacks
     def setUp(self):
-        self.__mongod = [Mongod(port=p, replset=self.rsname) for p in self.ports]
+        self.__mongod = [
+            Mongod(port=p, replset=self.rsname) for p in self.ports
+        ]
         yield defer.gatherResults([mongo.start() for mongo in self.__mongod])
 
-        yield defer.gatherResults([self.__check_reachable(port) for port in self.ports])
+        yield defer.gatherResults(
+            [self.__check_reachable(port) for port in self.ports]
+        )
 
-        master_uri = "mongodb://localhost:{0}/?readPreference=secondaryPreferred".format(self.ports[0])
+        master_uri = 'mongodb://localhost:{0}/?readPreference=secondaryPreferred'.format(
+            self.ports[0]
+        )
         master = ConnectionPool(master_uri)
-        yield master.admin.command("replSetInitiate", self.rsconfig)
+        yield master.admin.command('replSetInitiate', self.rsconfig)
 
         ready = False
         n_tries = int(self.__init_timeout / self.__ping_interval)
@@ -78,22 +88,32 @@ class TestReplicaSet(unittest.TestCase):
             # to be sure that replica set is up and running, primary is elected and all
             # secondaries are in sync and ready to became new primary
 
-            ismaster_req = master.admin.command("ismaster", check=False)
-            replstatus_req = master.admin.command("replSetGetStatus", check=False)
-            ismaster, replstatus = yield defer.gatherResults([ismaster_req, replstatus_req])
+            ismaster_req = master.admin.command('ismaster', check=False)
+            replstatus_req = master.admin.command(
+                'replSetGetStatus', check=False
+            )
+            ismaster, replstatus = yield defer.gatherResults(
+                [ismaster_req, replstatus_req]
+            )
 
-            initialized = replstatus["ok"]
-            ok_states = {"PRIMARY", "SECONDARY"}
-            states_ready = all(m["stateStr"] in ok_states for m in replstatus.get("members", []))
-            ready = initialized and ismaster["ismaster"] and states_ready
+            initialized = replstatus['ok']
+            ok_states = {'PRIMARY', 'SECONDARY'}
+            states_ready = all(
+                m['stateStr'] in ok_states
+                for m in replstatus.get('members', [])
+            )
+            ready = initialized and ismaster['ismaster'] and states_ready
 
             if ready:
                 break
 
         if not ready:
             yield self.tearDown()
-            raise Exception("ReplicaSet initialization took more than {0}s".format(
-                self.__init_timeout))
+            raise Exception(
+                'ReplicaSet initialization took more than {0}s'.format(
+                    self.__init_timeout
+                )
+            )
 
         yield master.disconnect()
 
@@ -103,7 +123,7 @@ class TestReplicaSet(unittest.TestCase):
 
     @defer.inlineCallbacks
     def test_WriteToMaster(self):
-        conn = MongoConnection("localhost", self.ports[0])
+        conn = MongoConnection('localhost', self.ports[0])
         try:
             coll = conn.db.coll
             yield coll.insert({'x': 42}, safe=True)
@@ -114,17 +134,25 @@ class TestReplicaSet(unittest.TestCase):
 
     @defer.inlineCallbacks
     def test_SlaveOk(self):
-        uri = "mongodb://localhost:{0}/?readPreference=secondaryPreferred".format(self.ports[1])
+        uri = 'mongodb://localhost:{0}/?readPreference=secondaryPreferred'.format(
+            self.ports[1]
+        )
         conn = ConnectionPool(uri)
         try:
             empty = yield conn.db.coll.find(flags=QUERY_SLAVE_OK)
             self.assertEqual(empty, [])
 
-            server_status = yield conn.admin.command("serverStatus")
-            _version = [int(part) for part in server_status["version"].split('.')]
+            server_status = yield conn.admin.command('serverStatus')
+            _version = [
+                int(part) for part in server_status['version'].split('.')
+            ]
 
-            expected_error = AutoReconnect if _version > [4, 2] else OperationFailure
-            yield self.assertFailure(conn.db.coll.insert({'x': 42}), expected_error)
+            expected_error = (
+                AutoReconnect if _version > [4, 2] else OperationFailure
+            )
+            yield self.assertFailure(
+                conn.db.coll.insert({'x': 42}), expected_error
+            )
         finally:
             yield conn.disconnect()
 
@@ -132,7 +160,7 @@ class TestReplicaSet(unittest.TestCase):
     def test_SwitchToMasterOnConnect(self):
         # Reverse hosts order
         try:
-            conn = MongoConnection("localhost", self.ports[1])
+            conn = MongoConnection('localhost', self.ports[1])
             result = yield conn.db.coll.find({'x': 42})
             self.assertEqual(result, [])
         finally:
@@ -144,7 +172,9 @@ class TestReplicaSet(unittest.TestCase):
     @defer.inlineCallbacks
     def test_AutoReconnect(self):
         try:
-            uri = "mongodb://localhost:{0}/?w={1}".format(self.ports[0], len(self.ports))
+            uri = 'mongodb://localhost:{0}/?w={1}'.format(
+                self.ports[0], len(self.ports)
+            )
             conn = ConnectionPool(uri, max_delay=5)
 
             yield conn.db.coll.insert({'x': 42}, safe=True)
@@ -166,12 +196,16 @@ class TestReplicaSet(unittest.TestCase):
 
     @defer.inlineCallbacks
     def test_AutoReconnect_from_primary_step_down(self):
-        uri = "mongodb://localhost:{0}/?w={1}".format(self.ports[0], len(self.ports))
+        uri = 'mongodb://localhost:{0}/?w={1}'.format(
+            self.ports[0], len(self.ports)
+        )
         conn = ConnectionPool(uri, max_delay=5)
 
         # this will force primary to step down, triggering an AutoReconnect that bubbles up
         # through the connection pool to the client
-        command = conn.admin.command(SON([('replSetStepDown', 86400), ('force', 1)]))
+        command = conn.admin.command(
+            SON([('replSetStepDown', 86400), ('force', 1)])
+        )
         self.assertFailure(command, AutoReconnect)
 
         yield conn.disconnect()
@@ -179,55 +213,61 @@ class TestReplicaSet(unittest.TestCase):
     @defer.inlineCallbacks
     def test_find_with_timeout(self):
         try:
-            uri = "mongodb://localhost:{0}/?w={1}".format(self.ports[0], len(self.ports))
+            uri = 'mongodb://localhost:{0}/?w={1}'.format(
+                self.ports[0], len(self.ports)
+            )
             conn = ConnectionPool(uri, retry_delay=3, max_delay=5)
 
             yield conn.db.coll.insert({'x': 42}, safe=True)
 
-            self.__mongod[0].kill(signal.SIGSTOP)
+            yield self.__mongod[0].kill(signal.SIGSTOP)
 
             while True:
                 try:
                     yield conn.db.coll.find_one(timeout=2)
-                    self.fail("TimeExceeded not raised!")
+                    self.fail('TimeExceeded not raised!')
                 except TimeExceeded:
                     break  # this is what we should have returned
                 except AutoReconnect:
                     pass
 
         finally:
-            self.__mongod[0].kill(signal.SIGCONT)
+            yield self.__mongod[0].kill(signal.SIGCONT)
             yield conn.disconnect()
             self.flushLoggedErrors(AutoReconnect)
 
     @defer.inlineCallbacks
     def test_find_with_deadline(self):
         try:
-            uri = "mongodb://localhost:{0}/?w={1}".format(self.ports[0], len(self.ports))
+            uri = 'mongodb://localhost:{0}/?w={1}'.format(
+                self.ports[0], len(self.ports)
+            )
             conn = ConnectionPool(uri, retry_delay=3, max_delay=5)
 
             yield conn.db.coll.insert({'x': 42}, safe=True)
 
-            self.__mongod[0].kill(signal.SIGSTOP)
+            yield self.__mongod[0].kill(signal.SIGSTOP)
 
             while True:
                 try:
-                    yield conn.db.coll.find_one(deadline=time()+2)
-                    self.fail("TimeExceeded not raised!")
+                    yield conn.db.coll.find_one(deadline=time() + 2)
+                    self.fail('TimeExceeded not raised!')
                 except TimeExceeded:
                     break  # this is what we should have returned
                 except AutoReconnect:
                     pass
 
         finally:
-            self.__mongod[0].kill(signal.SIGCONT)
+            yield self.__mongod[0].kill(signal.SIGCONT)
             yield conn.disconnect()
             self.flushLoggedErrors(AutoReconnect)
 
     @defer.inlineCallbacks
     def test_TimeExceeded_insert(self):
         try:
-            uri = "mongodb://localhost:{0}/?w={1}".format(self.ports[0], len(self.ports))
+            uri = 'mongodb://localhost:{0}/?w={1}'.format(
+                self.ports[0], len(self.ports)
+            )
             conn = ConnectionPool(uri, retry_delay=3, max_delay=5)
 
             yield conn.db.coll.insert({'x': 42}, safe=True)
@@ -237,7 +277,7 @@ class TestReplicaSet(unittest.TestCase):
             while True:
                 try:
                     yield conn.db.coll.insert({'y': 42}, safe=True, timeout=2)
-                    self.fail("TimeExceeded not raised!")
+                    self.fail('TimeExceeded not raised!')
                 except TimeExceeded:
                     break  # this is what we should have returned
                 except AutoReconnect:
@@ -250,7 +290,9 @@ class TestReplicaSet(unittest.TestCase):
 
     @defer.inlineCallbacks
     def test_InvalidRSName(self):
-        uri = "mongodb://localhost:{0}/?replicaSet={1}_X".format(self.ports[0], self.rsname)
+        uri = 'mongodb://localhost:{0}/?replicaSet={1}_X'.format(
+            self.ports[0], self.rsname
+        )
 
         ok = defer.Deferred()
 
@@ -262,23 +304,25 @@ class TestReplicaSet(unittest.TestCase):
             else:
                 ok.errback(exception)
 
-        self.patch(MongoProtocol, "fail", proto_fail)
+        self.patch(MongoProtocol, 'fail', proto_fail)
 
         conn = ConnectionPool(uri)
 
         @defer.inlineCallbacks
         def do_query():
             yield conn.db.coll.insert({'x': 42})
-            raise Exception("You shall not pass!")
+            raise Exception('You shall not pass!')
 
-        yield defer.DeferredList([ok, do_query()],
-                                 fireOnOneCallback=True,
-                                 fireOnOneErrback=True)
+        yield defer.DeferredList(
+            [ok, do_query()], fireOnOneCallback=True, fireOnOneErrback=True
+        )
         self.flushLoggedErrors(AutoReconnect)
 
     @defer.inlineCallbacks
     def test_StaleConnection(self):
-        conn = MongoConnection("localhost", self.ports[0], ping_interval = 5, ping_timeout = 5)
+        conn = MongoConnection(
+            'localhost', self.ports[0], ping_interval=5, ping_timeout=5
+        )
         try:
             yield conn.db.coll.count()
             # check that 5s pingers won't break connection if it is healthy
